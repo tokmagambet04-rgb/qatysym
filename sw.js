@@ -1,5 +1,5 @@
 // Қатысым — service worker. Файлдар өзгерсе, нұсқаны арттыру керек.
-const CACHE = 'qatysym-v1';
+const CACHE = 'qatysym-v2';
 const ASSETS = [
   './',
   'index.html',
