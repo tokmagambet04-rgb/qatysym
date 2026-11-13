@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="kk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Қатысым</title>
+<meta name="description" content="Оқушылардың қатысымын белгілеу">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#f4f5f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f1114" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Қатысым">
+<meta name="format-detection" content="telephone=no">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<main id="app">
+
+  <!-- Негізгі экран -->
+  <section id="v-list" class="view">
+    <div class="sticky">
+      <header class="top">
+        <div>
+          <h1>Қатысым</h1>
+          <p id="todayLabel" class="muted"></p>
+        </div>
+        <a href="#/settings" class="btn ghost small">Баптау</a>
+      </header>
+      <div id="banner" class="banner" hidden>
+        <span id="bannerText"></span>
+        <button type="button" class="btn small" data-act="backup">Көшірмені сақтау</button>
+      </div>
+      <div id="chips" class="chips" role="tablist"></div>
+      <input id="search" class="field" type="search" placeholder="Іздеу" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="search" aria-label="Іздеу">
+    </div>
+
+    <ul id="list" class="list"></ul>
+
+    <form id="addForm" class="addrow" autocomplete="off">
+      <input id="addName" class="field" type="text" placeholder="Жаңа оқушының аты" maxlength="60" enterkeyhint="done" aria-label="Жаңа оқушының аты">
+      <button type="submit" class="btn primary">Қосу</button>
+    </form>
+  </section>
+
+  <!-- Оқушы беті -->
+  <section id="v-student" class="view" hidden></section>
+
+  <!-- Баптау -->
+  <section id="v-settings" class="view" hidden>
+    <header class="top">
+      <a href="#/" class="btn ghost small">‹ Артқа</a>
+      <h2>Баптау</h2>
+      <span class="spacer"></span>
+    </header>
+
+    <div class="card">
+      <h3>Сақтық көшірме</h3>
+      <p class="muted">Деректер тек осы телефонда сақталады. Көшірмені аптасына бір рет Файлдар қолданбасына немесе Telegram-ға жіберіп отырыңыз.</p>
+      <p id="backupInfo" class="info"></p>
+      <button type="button" class="btn primary block" data-act="backup">Көшірмені сақтау</button>
+      <button type="button" class="btn block" data-act="restore">Көшірмені қалпына келтіру</button>
+      <input id="restoreFile" type="file" accept=".json,application/json,text/plain" hidden>
+    </div>
+
+    <div class="card">
+      <h3>Сақтау күйі</h3>
+      <p id="persistInfo" class="muted"></p>
+    </div>
+  </section>
+
+</main>
+
+<!-- Терезе -->
+<div id="sheet" class="overlay" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+    <h3 id="sheetTitle"></h3>
+    <p id="sheetText" class="muted"></p>
+    <input id="sheetInput" class="field" type="text" maxlength="60" hidden>
+    <div id="sheetBtns" class="sheet-btns"></div>
+  </div>
+</div>
+
+<!-- Хабарлама -->
+<div id="toast" class="toast" role="status" aria-live="polite" hidden>
+  <span id="toastText"></span>
+  <button type="button" id="toastUndo" class="toast-undo">Болдырмау</button>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
