@@ -96,12 +96,50 @@ function addDate(cycle, d) {
 }
 
 /* Жаңа цикл. Төленбеген артық сабақтар жаңа 8 сабақтың есебіне көшеді. */
-function newCycle(s) {
+function newCycle(s, amount) {
   const c = cur(s);
   c.dates.sort();
   const carry = c.dates.slice(LESSONS);
   c.dates = c.dates.slice(0, LESSONS);
-  s.cycles.push({ start: carry[0] || today(), dates: carry });
+  s.cycles.push({ start: carry[0] || today(), dates: carry, paid: { date: today(), amount } });
+  if (amount) state.meta.lastAmount = amount;
+}
+
+/* ───────── Төлем ───────── */
+const money = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' ₸';
+const paidText = (p) => (p.amount ? money(p.amount) : 'сомасы көрсетілмеген');
+function lastAmount(s) {
+  for (let i = s.cycles.length - 1; i >= 0; i--) {
+    const p = s.cycles[i].paid;
+    if (p && p.amount) return p.amount;
+  }
+  return state.meta.lastAmount || 0;
+}
+/* Соманы сұрайды. Бас тартылса null, әйтпесе {amount} немесе {remove:true} қайтарады */
+async function askAmount(s, current = null) {
+  const preset = current ? current.amount : lastAmount(s);
+  const buttons = [{ label: 'Сақтау', value: 'ok', kind: 'primary' }];
+  if (current) buttons.push({ label: 'Төлем жазбасын өшіру', value: 'remove', kind: 'danger' });
+  buttons.push(CANCEL);
+  const v = await sheet({
+    title: `${s.name}: төлем сомасы`,
+    text: 'Қанша теңге төледі? Соманы бос қалдыруға да болады.',
+    input: { value: preset ? String(preset) : '', placeholder: 'Мысалы, 20000', mode: 'numeric' },
+    buttons
+  });
+  if (v === 'remove') return { remove: true };
+  if (v !== 'ok') return null;
+  return { amount: parseInt($('sheetInput').value.replace(/\D/g, ''), 10) || 0 };
+}
+async function onSetPay(s) {
+  const c = cur(s);
+  const r = await askAmount(s, c.paid || null);
+  if (!r) return;
+  if (r.remove) return act(`${s.name}: төлем жазбасы өшірілді`, () => { delete c.paid; });
+  act(`${s.name}: төлем жазылды — ${paidText(r)}`, () => {
+    c.paid = { date: c.paid ? c.paid.date : today(), amount: r.amount };
+    if (r.amount) state.meta.lastAmount = r.amount;
+  });
 }
 
 /* ───────── Терезе (alert/confirm орнына) ───────── */
@@ -113,7 +151,11 @@ function sheet({ title, text = '', input = null, buttons }) {
   $('sheetText').hidden = !text;
   const inp = $('sheetInput');
   inp.hidden = !input;
-  if (input) { inp.value = input.value || ''; inp.placeholder = input.placeholder || ''; }
+  if (input) {
+    inp.value = input.value || '';
+    inp.placeholder = input.placeholder || '';
+    inp.inputMode = input.mode || 'text';
+  }
   $('sheetBtns').innerHTML = buttons.map((b) =>
     `<button type="button" class="btn ${b.kind || ''}" data-sheet="${esc(b.value)}">${esc(b.label)}</button>`).join('');
   $('sheet').hidden = false;
@@ -224,6 +266,7 @@ function renderStudent(s) {
   const hist = past.length ? past.map((p) => `
       <div class="hist">
         <b>${fmtFull(p.start)}</b> басталған · ${p.dates.length} сабақ
+        <p>${p.paid ? `Төлем: ${paidText(p.paid)} (${fmtFull(p.paid.date)})` : 'Төлем жазылмаған'}</p>
         <p class="muted">${p.dates.map(fmtShort).join(', ') || '—'}</p>
       </div>`).join('')
     : '<p class="muted">Бұрынғы циклдер жоқ</p>';
@@ -252,6 +295,15 @@ function renderStudent(s) {
       </form>
     </div>
 
+    <div class="card">
+      <h3>Осы 8 сабақтың төлемі</h3>
+      ${c.paid
+        ? `<p>Төленді: <b>${paidText(c.paid)}</b> · ${fmtFull(c.paid.date)}</p>
+           <button type="button" class="btn block" data-act="setpay">Төлемді өзгерту</button>`
+        : `<p class="unpaid">Төлем жазылмаған</p>
+           <button type="button" class="btn block" data-act="setpay">Осы 8 сабаққа төлемді жазу</button>`}
+    </div>
+
     <button type="button" class="btn primary block" data-act="pay">Төледі — жаңа 8 сабақ</button>
 
     <div class="card" style="margin-top:12px">
@@ -275,6 +327,49 @@ function renderSettings() {
         : 'Бұл браузер тұрақты сақтауды қолдамайды. Көшірмені жиі сақтаңыз.');
 }
 
+function renderPay() {
+  const rows = state.students.map((s) => ({ s, p: cur(s).paid || null }));
+  const paid = rows.filter((r) => r.p);
+  const unpaid = rows.filter((r) => !r.p);
+  const sum = paid.reduce((a, r) => a + (r.p.amount || 0), 0);
+
+  const months = {};
+  for (const s of state.students) {
+    for (const c of s.cycles) {
+      if (!c.paid) continue;
+      const k = c.paid.date.slice(0, 7);
+      if (!months[k]) months[k] = { sum: 0, n: 0 };
+      months[k].sum += c.paid.amount || 0;
+      months[k].n++;
+    }
+  }
+  const monthRows = Object.keys(months).sort().reverse().map((k) => {
+    const [y, m] = k.split('-').map(Number);
+    return `<li><span>${MONTHS[m - 1]} ${y} · ${months[k].n} төлем</span><b>${money(months[k].sum)}</b></li>`;
+  }).join('');
+
+  const line = ({ s, p }) => `
+    <li><button type="button" class="payrow" data-act="open" data-id="${s.id}">
+      <span class="name">${esc(s.name)}</span>
+      ${p ? `<span class="payamt"><b>${paidText(p)}</b><small>${fmtFull(p.date)}</small></span>`
+          : '<span class="badge">Төленбеген</span>'}
+    </button></li>`;
+
+  const all = rows.length > 0 && unpaid.length === 0;
+  $('payBody').innerHTML = `
+    <div class="card summary ${all ? 'ok' : ''}">
+      <p class="muted">Ағымдағы 8 сабаққа төлегендер</p>
+      <p class="big">${paid.length} / ${rows.length}${all ? ' ✓' : ''}</p>
+      <p class="hint">Жиналған сома: <b>${money(sum)}</b></p>
+      ${all ? '<p class="hint">Барлығы төледі.</p>' : ''}
+    </div>
+    ${unpaid.length ? `<div class="card"><h3>Төлемегендер (${unpaid.length})</h3><ul class="paylist">${unpaid.map(line).join('')}</ul></div>` : ''}
+    ${paid.length ? `<div class="card"><h3>Төлегендер (${paid.length})</h3><ul class="paylist">${paid.map(line).join('')}</ul></div>` : ''}
+    <div class="card"><h3>Айлар бойынша түскен төлем</h3>
+      ${monthRows ? `<ul class="paylist months">${monthRows}</ul>` : '<p class="muted">Әзірге төлем жазылмаған</p>'}
+    </div>`;
+}
+
 let shown = '';
 function currentId() {
   const m = location.hash.match(/^#\/s\/(.+)$/);
@@ -283,11 +378,12 @@ function currentId() {
 function render() {
   const id = currentId();
   const s = id && find(id);
-  const view = s ? 'student' : location.hash === '#/settings' ? 'settings' : 'list';
+  const view = s ? 'student' : location.hash === '#/settings' ? 'settings' : location.hash === '#/pay' ? 'pay' : 'list';
   if (id && !s) history.replaceState(null, '', '#/');
-  for (const v of ['list', 'student', 'settings']) $('v-' + v).hidden = v !== view;
+  for (const v of ['list', 'student', 'settings', 'pay']) $('v-' + v).hidden = v !== view;
   if (view === 'student') renderStudent(s);
   else if (view === 'settings') renderSettings();
+  else if (view === 'pay') renderPay();
   else renderList();
   if (view !== shown) {
     const prev = shown;
@@ -318,7 +414,9 @@ async function onCame(id) {
       ]
     });
     if (v === 'paid') {
-      act(`${s.name}: төледі, жаңа 8 сабақ басталды`, () => { newCycle(s); addDate(cur(s), t); });
+      const r = await askAmount(s);
+      if (!r) return;
+      act(`${s.name}: төледі (${paidText(r)}), жаңа 8 сабақ басталды`, () => { newCycle(s, r.amount); addDate(cur(s), t); });
     } else if (v === 'extra') {
       act(`${s.name}: артық сабақ жазылды`, () => addDate(c, t));
     }
@@ -337,7 +435,9 @@ async function onPay(s) {
     });
     if (v !== 'yes') return;
   }
-  act(`${s.name}: төледі, жаңа 8 сабақ басталды`, () => newCycle(s));
+  const r = await askAmount(s);
+  if (!r) return;
+  act(`${s.name}: төледі (${paidText(r)}), жаңа 8 сабақ басталды`, () => newCycle(s, r.amount));
 }
 
 async function onRename(s) {
@@ -410,7 +510,11 @@ function normalize(raw) {
     const cycles = s.cycles.map((c) => {
       if (!c || !Array.isArray(c.dates)) throw new Error('format');
       const dates = [...new Set(c.dates.filter(isDate))].sort();
-      return { start: isDate(c.start) ? c.start : dates[0] || today(), dates };
+      const cycle = { start: isDate(c.start) ? c.start : dates[0] || today(), dates };
+      if (c.paid && isDate(c.paid.date)) {
+        cycle.paid = { date: c.paid.date, amount: Math.max(0, Math.floor(Number(c.paid.amount)) || 0) };
+      }
+      return cycle;
     });
     if (!cycles.length) cycles.push({ start: today(), dates: [] });
     return { id: typeof s.id === 'string' && s.id ? s.id : newId(), name: s.name.trim().slice(0, 60), cycles };
@@ -451,6 +555,7 @@ document.addEventListener('click', (e) => {
   else if (a === 'restore') $('restoreFile').click();
   else if (!s) return;
   else if (a === 'pay') onPay(s);
+  else if (a === 'setpay') onSetPay(s);
   else if (a === 'rename') onRename(s);
   else if (a === 'delete') onDelete(s);
   else if (a === 'deldate') {
