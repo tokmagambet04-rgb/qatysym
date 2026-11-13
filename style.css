@@ -80,7 +80,36 @@ h3 { font-size: 17px; }
   align-items: center;
   gap: 10px;
 }
-#v-student .top, #v-settings .top {
+.topbtns { display: flex; gap: 6px; }
+.topbtns .btn { padding: 0 10px; font-size: 15px; }
+.unpaid { color: var(--danger); font-weight: 600; }
+.summary.ok { background: var(--accent-soft); border-color: var(--accent); }
+.summary .big { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.paylist { list-style: none; margin: 0; padding: 0; }
+.paylist li { border-top: 1px solid var(--line); }
+.paylist li:first-child { border-top: 0; }
+.payrow, .paylist.months li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  padding: 6px 0;
+}
+.payrow {
+  appearance: none;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.payrow .name { font-size: 17px; }
+.payamt { text-align: right; font-variant-numeric: tabular-nums; }
+.payamt small { display: block; color: var(--muted); font-size: 13px; }
+#v-student .top, #v-settings .top, #v-pay .top {
   grid-template-columns: 96px 1fr 96px;
   padding-bottom: 14px;
 }
