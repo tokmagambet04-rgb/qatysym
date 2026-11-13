@@ -29,7 +29,10 @@
           <h1>Қатысым</h1>
           <p id="todayLabel" class="muted"></p>
         </div>
-        <a href="#/settings" class="btn ghost small">Баптау</a>
+        <nav class="topbtns">
+          <a href="#/pay" class="btn ghost small">Төлемдер</a>
+          <a href="#/settings" class="btn ghost small">Баптау</a>
+        </nav>
       </header>
       <div id="banner" class="banner" hidden>
         <span id="bannerText"></span>
@@ -49,6 +52,16 @@
 
   <!-- Оқушы беті -->
   <section id="v-student" class="view" hidden></section>
+
+  <!-- Төлемдер -->
+  <section id="v-pay" class="view" hidden>
+    <header class="top">
+      <a href="#/" class="btn ghost small">‹ Артқа</a>
+      <h2>Төлемдер</h2>
+      <span class="spacer"></span>
+    </header>
+    <div id="payBody"></div>
+  </section>
 
   <!-- Баптау -->
   <section id="v-settings" class="view" hidden>
