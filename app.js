@@ -1,10 +1,9 @@
 'use strict';
 
 /* ───────── Тұрақтылар ───────── */
-const LESSONS = 8;
+const DEFAULT_LESSONS = 8;
+const MAX_LESSONS = 40;
 const BACKUP_DAYS = 7;
-const SEED = ['Алан', 'Ануар', 'Сүлеймен Али', 'Мирас', 'Шахназ', 'Каусар', 'Інжу', 'Амина',
-  'Мустафа', 'Ілияс', 'Апайдың қ1', 'Апайдың қ2', 'Адия'];
 const MONTHS = ['қаңтар', 'ақпан', 'наурыз', 'сәуір', 'мамыр', 'маусым', 'шілде', 'тамыз',
   'қыркүйек', 'қазан', 'қараша', 'желтоқсан'];
 const WD_FULL = ['жексенбі', 'дүйсенбі', 'сейсенбі', 'сәрсенбі', 'бейсенбі', 'жұма', 'сенбі'];
@@ -56,8 +55,9 @@ async function dbSet(key, val) {
 }
 
 /* ───────── Күй ───────── */
-let state = { students: [], meta: { created: today(), lastBackup: null } };
+let state = { students: [], courses: [], meta: { created: today(), lastBackup: null } };
 let filter = 'all';
+let courseFilter = 'all';
 let query = '';
 let persisted = null;
 let listScroll = 0;
@@ -65,10 +65,15 @@ let listScroll = 0;
 const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const find = (id) => state.students.find((s) => s.id === id);
 const cur = (s) => s.cycles[s.cycles.length - 1];
+/* Сабақ түрі (ҰБТ, НИШ, жеке...) және циклдегі сабақ саны */
+const course = (s) => state.courses.find((c) => c.id === s.course) || null;
+const clampN = (n) => Math.min(MAX_LESSONS, Math.max(1, Math.floor(Number(n)) || DEFAULT_LESSONS));
+const total = (s) => { const c = course(s); return clampN(c ? c.lessons : state.meta.lessons); };
 const stat = (s) => {
   const n = cur(s).dates.length;
-  const done = Math.min(n, LESSONS);
-  return { done, extra: Math.max(0, n - LESSONS), left: LESSONS - done, today: cur(s).dates.includes(today()) };
+  const t = total(s);
+  const done = Math.min(n, t);
+  return { done, total: t, extra: Math.max(0, n - t), left: t - done, today: cur(s).dates.includes(today()) };
 };
 const klass = (st) => (st.left === 0 ? 'due' : st.left <= 2 ? 'warn' : '');
 
@@ -78,12 +83,15 @@ function save() {
 
 /* Әрекетті орындап, «Болдырмау» мүмкіндігі бар хабарлама шығарады */
 function act(msg, fn) {
-  const snap = JSON.stringify(state.students);
+  const snap = JSON.stringify({ s: state.students, c: state.courses, l: state.meta.lessons });
   fn();
   save();
   render();
   toast(msg, () => {
-    state.students = JSON.parse(snap);
+    const old = JSON.parse(snap);
+    state.students = old.s;
+    state.courses = old.c;
+    state.meta.lessons = old.l;
     save();
     render();
     toast('Әрекет болдырылмады');
@@ -99,8 +107,9 @@ function addDate(cycle, d) {
 function newCycle(s, amount) {
   const c = cur(s);
   c.dates.sort();
-  const carry = c.dates.slice(LESSONS);
-  c.dates = c.dates.slice(0, LESSONS);
+  const t = total(s);
+  const carry = c.dates.slice(t);
+  c.dates = c.dates.slice(0, t);
   s.cycles.push({ start: carry[0] || today(), dates: carry, paid: { date: today(), amount } });
   if (amount) state.meta.lastAmount = amount;
 }
@@ -113,7 +122,8 @@ function lastAmount(s) {
     const p = s.cycles[i].paid;
     if (p && p.amount) return p.amount;
   }
-  return state.meta.lastAmount || 0;
+  const c = course(s);
+  return (c && c.price) || state.meta.lastAmount || 0;
 }
 /* Соманы сұрайды. Бас тартылса null, әйтпесе {amount} немесе {remove:true} қайтарады */
 async function askAmount(s, current = null) {
@@ -144,8 +154,15 @@ async function onSetPay(s) {
 
 /* ───────── Терезе (alert/confirm орнына) ───────── */
 let sheetResolve = null;
-function sheet({ title, text = '', input = null, buttons }) {
+function sheet({ title, text = '', input = null, fields = null, buttons }) {
   closeSheet(null);
+  // Жазу өрісі бар терезе жоғарыда тұрады — пернетақта жаппайды
+  $('sheet').classList.toggle('top', !!(input || fields));
+  $('sheetFields').hidden = !fields;
+  $('sheetFields').innerHTML = (fields || []).map((f) =>
+    `<label for="sf-${f.key}">${esc(f.label)}</label>` +
+    `<input id="sf-${f.key}" class="field" type="text" maxlength="40" inputmode="${f.mode || 'text'}" ` +
+    `value="${esc(f.value)}" placeholder="${esc(f.placeholder || '')}">`).join('');
   $('sheetTitle').textContent = title;
   $('sheetText').textContent = text;
   $('sheetText').hidden = !text;
@@ -203,11 +220,11 @@ $('toastUndo').addEventListener('click', () => {
 /* ───────── Көрсету ───────── */
 function dotsHtml(st) {
   let h = '<span class="dots" aria-hidden="true">';
-  for (let i = 0; i < LESSONS; i++) h += `<span class="dot${i < st.done ? ' on' : ''}"></span>`;
+  for (let i = 0; i < st.total; i++) h += `<span class="dot${i < st.done ? ' on' : ''}"></span>`;
   return h + '</span>';
 }
 function meterHtml(st) {
-  return `<span class="meter">${dotsHtml(st)}<span class="count">${st.done}/${LESSONS}</span>` +
+  return `<span class="meter">${dotsHtml(st)}<span class="count">${st.done}/${st.total}</span>` +
     (st.extra ? `<span class="extra">+${st.extra} артық</span>` : '') +
     (st.left === 0 ? '<span class="badge">Төлеу керек</span>' : '') + '</span>';
 }
@@ -226,7 +243,20 @@ function renderList() {
       : `Сақтық көшірме әлі жасалмаған (${since} күн)`;
   }
 
-  const stats = state.students.map((s) => ({ s, st: stat(s) }));
+  // Сабақ түрі бойынша сүзгі
+  if (courseFilter !== 'all' && courseFilter !== 'none' && !state.courses.some((c) => c.id === courseFilter)) courseFilter = 'all';
+  const inCourse = (s) => courseFilter === 'all' || (courseFilter === 'none' ? !course(s) : s.course === courseFilter);
+  const cnt = (f) => state.students.filter(f).length;
+  const pills = [['all', 'Бәрі', state.students.length]]
+    .concat(state.courses.map((c) => [c.id, c.name, cnt((s) => s.course === c.id)]));
+  const noCourse = cnt((s) => !course(s));
+  if (noCourse) pills.push(['none', 'Түрі жоқ', noCourse]);
+  else if (courseFilter === 'none') courseFilter = 'all';
+  $('courses').hidden = !state.courses.length;
+  $('courses').innerHTML = pills.map(([id, name, n]) =>
+    `<button type="button" class="pill" aria-pressed="${courseFilter === id}" data-act="course" data-c="${id}">${esc(name)} <b>${n}</b></button>`).join('');
+
+  const stats = state.students.filter(inCourse).map((s) => ({ s, st: stat(s) }));
   const groups = {
     all: stats,
     soon: stats.filter((x) => x.st.left === 1 || x.st.left === 2),
@@ -243,23 +273,23 @@ function renderList() {
   $('list').innerHTML = rows.length ? rows.map(({ s, st }) => `
     <li class="row ${klass(st)}">
       <button type="button" class="row-main" data-act="open" data-id="${s.id}">
-        <span class="name">${esc(s.name)}</span>
+        <span class="name">${esc(s.name)}${course(s) && courseFilter === 'all' ? `<span class="ctag">${esc(course(s).name)}</span>` : ''}</span>
         ${meterHtml(st)}
       </button>
       <button type="button" class="btn came ${st.today ? 'on' : 'primary'}" data-act="came" data-id="${s.id}"
         aria-pressed="${st.today}">${st.today ? '✓ Бүгін' : 'Келді'}</button>
     </li>`).join('')
-    : `<li class="empty">${state.students.length ? 'Оқушы табылмады' : 'Әзірге оқушы жоқ. Төменнен қосыңыз.'}</li>`;
+    : `<li class="empty">${state.students.length ? 'Оқушы табылмады' : 'Әзірге оқушы жоқ. Төмендегі жолға атын жазып қосыңыз. Сабақ түрлерін (ҰБТ, НИШ, жеке...) «Баптау» бөлімінде құруға болады.'}</li>`;
 }
 
 function renderStudent(s) {
   const st = stat(s);
   const c = cur(s);
   const hint = st.left === 0
-    ? 'Барлық 8 сабақ бітті — төлеу керек.'
+    ? `Барлық ${st.total} сабақ бітті — төлеу керек.`
     : `${st.left} сабақ қалды.`;
   const dates = c.dates.length ? c.dates.map((d, i) => `
-      <li><span>${i + 1}. ${fmtShort(d)}${i >= LESSONS ? '<span class="tag">артық</span>' : ''}</span>
+      <li><span>${i + 1}. ${fmtShort(d)}${i >= st.total ? '<span class="tag">артық</span>' : ''}</span>
       <button type="button" class="x" data-act="deldate" data-d="${d}" aria-label="${fmtShort(d)} күнін өшіру">✕</button></li>`).join('')
     : '<li class="muted">Әзірге белгі жоқ</li>';
   const past = s.cycles.slice(0, -1).reverse();
@@ -296,15 +326,24 @@ function renderStudent(s) {
     </div>
 
     <div class="card">
-      <h3>Осы 8 сабақтың төлемі</h3>
+      <h3>Сабақ түрі</h3>
+      ${state.courses.length ? `
+      <select id="courseSel" class="field" aria-label="Сабақ түрі">
+        <option value="">Түрі жоқ (${clampN(state.meta.lessons)} сабақ)</option>
+        ${state.courses.map((k) => `<option value="${k.id}"${s.course === k.id ? ' selected' : ''}>${esc(k.name)} (${clampN(k.lessons)} сабақ)</option>`).join('')}
+      </select>` : '<p class="muted">Сабақ түрлерін (ҰБТ, НИШ, жеке...) «Баптау» бөлімінде қосыңыз.</p>'}
+    </div>
+
+    <div class="card">
+      <h3>Осы циклдің төлемі</h3>
       ${c.paid
         ? `<p>Төленді: <b>${paidText(c.paid)}</b> · ${fmtFull(c.paid.date)}</p>
            <button type="button" class="btn block" data-act="setpay">Төлемді өзгерту</button>`
         : `<p class="unpaid">Төлем жазылмаған</p>
-           <button type="button" class="btn block" data-act="setpay">Осы 8 сабаққа төлемді жазу</button>`}
+           <button type="button" class="btn block" data-act="setpay">Осы циклге төлемді жазу</button>`}
     </div>
 
-    <button type="button" class="btn primary block" data-act="pay">Төледі — жаңа 8 сабақ</button>
+    <button type="button" class="btn primary block" data-act="pay">Төледі — жаңа ${st.total} сабақ</button>
 
     <div class="card" style="margin-top:12px">
       <h3>Тарих</h3>
@@ -315,7 +354,52 @@ function renderStudent(s) {
     <button type="button" class="btn danger block" data-act="delete">Оқушыны өшіру</button>`;
 }
 
+/* ───────── Сабақ түрлері ───────── */
+async function onEditCourse(c) {
+  const buttons = [{ label: 'Сақтау', value: 'ok', kind: 'primary' }];
+  if (c) buttons.push({ label: 'Сабақ түрін өшіру', value: 'remove', kind: 'danger' });
+  buttons.push(CANCEL);
+  const v = await sheet({
+    title: c ? 'Сабақ түрін өзгерту' : 'Жаңа сабақ түрі',
+    fields: [
+      { key: 'name', label: 'Атауы', value: c ? c.name : '', placeholder: 'Мысалы, ҰБТ' },
+      { key: 'lessons', label: 'Бір төлемге неше сабақ', value: String(c ? clampN(c.lessons) : clampN(state.meta.lessons)), mode: 'numeric' },
+      { key: 'price', label: 'Бағасы, ₸ (бос қалдыруға болады)', value: c && c.price ? String(c.price) : '', mode: 'numeric', placeholder: 'Мысалы, 25000' }
+    ],
+    buttons
+  });
+  if (v === 'remove') {
+    const used = state.students.filter((s) => s.course === c.id).length;
+    const sure = await sheet({
+      title: `«${c.name}» өшірілсін бе?`,
+      text: used ? `Осы түрдегі ${used} оқушы өшпейді, тек «Түрі жоқ» болып қалады.` : 'Бұл түрде оқушы жоқ.',
+      buttons: [{ label: 'Иә, өшір', value: 'yes', kind: 'danger-fill' }, CANCEL]
+    });
+    if (sure !== 'yes') return;
+    act(`«${c.name}» өшірілді`, () => {
+      state.courses = state.courses.filter((x) => x.id !== c.id);
+      for (const s of state.students) if (s.course === c.id) delete s.course;
+    });
+    return;
+  }
+  if (v !== 'ok') return;
+  const name = $('sf-name').value.trim().slice(0, 40);
+  if (!name) return toast('Атауын жазыңыз');
+  const lessons = clampN($('sf-lessons').value.replace(/\D/g, ''));
+  const price = parseInt($('sf-price').value.replace(/\D/g, ''), 10) || 0;
+  if (c) act(`«${name}» сақталды`, () => { Object.assign(c, { name, lessons, price }); });
+  else act(`«${name}» қосылды`, () => { state.courses.push({ id: newId(), name, lessons, price }); });
+}
+
 function renderSettings() {
+  $('courseList').innerHTML = state.courses.length ? state.courses.map((c) => `
+    <li><button type="button" class="payrow" data-act="editcourse" data-id="${c.id}">
+      <span class="name">${esc(c.name)}</span>
+      <span class="payamt"><b>${clampN(c.lessons)} сабақ</b>
+        <small>${c.price ? money(c.price) : 'бағасы жоқ'} · ${state.students.filter((s) => s.course === c.id).length} оқушы</small></span>
+    </button></li>`).join('')
+    : '<li class="muted">Әзірге сабақ түрі жоқ. Мысалы: ҰБТ, НИШ, жеке сабақ.</li>';
+  if (document.activeElement !== $('defLessons')) $('defLessons').value = clampN(state.meta.lessons);
   const lb = state.meta.lastBackup;
   $('backupInfo').textContent = lb
     ? `Соңғы көшірме: ${fmtFull(lb)} (${daysBetween(lb, today())} күн бұрын)`
@@ -358,7 +442,7 @@ function renderPay() {
   const all = rows.length > 0 && unpaid.length === 0;
   $('payBody').innerHTML = `
     <div class="card summary ${all ? 'ok' : ''}">
-      <p class="muted">Ағымдағы 8 сабаққа төлегендер</p>
+      <p class="muted">Ағымдағы циклге төлегендер</p>
       <p class="big">${paid.length} / ${rows.length}${all ? ' ✓' : ''}</p>
       <p class="hint">Жиналған сома: <b>${money(sum)}</b></p>
       ${all ? '<p class="hint">Барлығы төледі.</p>' : ''}
@@ -403,12 +487,13 @@ async function onCame(id) {
     act(`${s.name}: бүгінгі белгі алынды`, () => { c.dates = c.dates.filter((d) => d !== t); });
     return;
   }
-  if (c.dates.length >= LESSONS) {
+  const n = total(s);
+  if (c.dates.length >= n) {
     const v = await sheet({
-      title: `${s.name}: 8 сабақ бітті`,
+      title: `${s.name}: ${n} сабақ бітті`,
       text: 'Оқушы жаңа сабақтарға төледі ме?',
       buttons: [
-        { label: 'Төледі — жаңа 8 сабаққа жаз', value: 'paid', kind: 'primary' },
+        { label: `Төледі — жаңа ${n} сабаққа жаз`, value: 'paid', kind: 'primary' },
         { label: 'Әзірге төлемеді — артық сабақ деп жаз', value: 'extra' },
         CANCEL
       ]
@@ -416,28 +501,28 @@ async function onCame(id) {
     if (v === 'paid') {
       const r = await askAmount(s);
       if (!r) return;
-      act(`${s.name}: төледі (${paidText(r)}), жаңа 8 сабақ басталды`, () => { newCycle(s, r.amount); addDate(cur(s), t); });
+      act(`${s.name}: төледі (${paidText(r)}), жаңа цикл басталды`, () => { newCycle(s, r.amount); addDate(cur(s), t); });
     } else if (v === 'extra') {
       act(`${s.name}: артық сабақ жазылды`, () => addDate(c, t));
     }
     return;
   }
-  act(`${s.name}: келді (${c.dates.length + 1}/${LESSONS})`, () => addDate(c, t));
+  act(`${s.name}: келді (${c.dates.length + 1}/${n})`, () => addDate(c, t));
 }
 
 async function onPay(s) {
   const st = stat(s);
   if (st.left > 0) {
     const v = await sheet({
-      title: '8 сабақ әлі біткен жоқ',
-      text: `${s.name} әзірге ${st.done}/${LESSONS} сабаққа келді. Сонда да жаңа 8 сабақты бастау керек пе? Қалған ${st.left} сабақ есептелмейді.`,
-      buttons: [{ label: 'Иә, жаңа 8 сабақты баста', value: 'yes', kind: 'primary' }, CANCEL]
+      title: `${st.total} сабақ әлі біткен жоқ`,
+      text: `${s.name} әзірге ${st.done}/${st.total} сабаққа келді. Сонда да жаңа циклді бастау керек пе? Қалған ${st.left} сабақ есептелмейді.`,
+      buttons: [{ label: 'Иә, жаңа циклді баста', value: 'yes', kind: 'primary' }, CANCEL]
     });
     if (v !== 'yes') return;
   }
   const r = await askAmount(s);
   if (!r) return;
-  act(`${s.name}: төледі (${paidText(r)}), жаңа 8 сабақ басталды`, () => newCycle(s, r.amount));
+  act(`${s.name}: төледі (${paidText(r)}), жаңа цикл басталды`, () => newCycle(s, r.amount));
 }
 
 async function onRename(s) {
@@ -483,7 +568,8 @@ function download(file) {
 
 async function backup() {
   const data = JSON.stringify({
-    app: 'qatysym', version: 1, exported: new Date().toISOString(), students: state.students
+    app: 'qatysym', version: 2, exported: new Date().toISOString(),
+    lessons: clampN(state.meta.lessons), courses: state.courses, students: state.students
   }, null, 2);
   const file = new File([data], `qatysym-${today()}.json`, { type: 'application/json' });
   try {
@@ -505,7 +591,16 @@ async function backup() {
 function normalize(raw) {
   const list = Array.isArray(raw) ? raw : raw && raw.students;
   if (!Array.isArray(list)) throw new Error('format');
-  return list.map((s) => {
+  const courses = (raw && Array.isArray(raw.courses) ? raw.courses : [])
+    .filter((c) => c && typeof c.name === 'string' && c.name.trim())
+    .map((c) => ({
+      id: typeof c.id === 'string' && c.id ? c.id : newId(),
+      name: c.name.trim().slice(0, 40),
+      lessons: clampN(c.lessons),
+      price: Math.max(0, Math.floor(Number(c.price)) || 0)
+    }));
+  const lessons = clampN(raw && raw.lessons);
+  const students = list.map((s) => {
     if (!s || typeof s.name !== 'string' || !s.name.trim() || !Array.isArray(s.cycles)) throw new Error('format');
     const cycles = s.cycles.map((c) => {
       if (!c || !Array.isArray(c.dates)) throw new Error('format');
@@ -517,14 +612,17 @@ function normalize(raw) {
       return cycle;
     });
     if (!cycles.length) cycles.push({ start: today(), dates: [] });
-    return { id: typeof s.id === 'string' && s.id ? s.id : newId(), name: s.name.trim().slice(0, 60), cycles };
+    const out = { id: typeof s.id === 'string' && s.id ? s.id : newId(), name: s.name.trim().slice(0, 60), cycles };
+    if (courses.some((c) => c.id === s.course)) out.course = s.course;
+    return out;
   });
+  return { students, courses, lessons };
 }
 
 async function restore(file) {
-  let students;
+  let data;
   try {
-    students = normalize(JSON.parse(await file.text()));
+    data = normalize(JSON.parse(await file.text()));
   } catch (e) {
     await sheet({
       title: 'Файл жарамсыз',
@@ -535,11 +633,15 @@ async function restore(file) {
   }
   const v = await sheet({
     title: 'Көшірмені қалпына келтіру',
-    text: `Қазіргі деректер (${state.students.length} оқушы) файлдағы деректермен (${students.length} оқушы) толық алмастырылады.`,
+    text: `Қазіргі деректер (${state.students.length} оқушы) файлдағы деректермен (${data.students.length} оқушы) толық алмастырылады.`,
     buttons: [{ label: 'Иә, алмастыр', value: 'yes', kind: 'primary' }, CANCEL]
   });
   if (v !== 'yes') return;
-  act(`Қалпына келтірілді: ${students.length} оқушы`, () => { state.students = students; });
+  act(`Қалпына келтірілді: ${data.students.length} оқушы`, () => {
+    state.students = data.students;
+    state.courses = data.courses;
+    state.meta.lessons = data.lessons;
+  });
 }
 
 /* ───────── Оқиғалар ───────── */
@@ -551,6 +653,9 @@ document.addEventListener('click', (e) => {
   if (a === 'filter') { filter = el.dataset.f; renderList(); }
   else if (a === 'open') location.hash = '#/s/' + encodeURIComponent(el.dataset.id);
   else if (a === 'came') onCame(el.dataset.id);
+  else if (a === 'course') { courseFilter = el.dataset.c; renderList(); }
+  else if (a === 'addcourse') onEditCourse(null);
+  else if (a === 'editcourse') { const c = state.courses.find((x) => x.id === el.dataset.id); if (c) onEditCourse(c); }
   else if (a === 'backup') backup();
   else if (a === 'restore') $('restoreFile').click();
   else if (!s) return;
@@ -571,12 +676,30 @@ document.addEventListener('submit', (e) => {
     if (!name) return $('addName').focus();
     $('addName').value = '';
     $('addName').blur();
-    act(`${name} қосылды`, () => {
-      state.students.push({ id: newId(), name, cycles: [{ start: today(), dates: [] }] });
+    // Сабақ түрі сүзгісі таңдалып тұрса, жаңа оқушы сол түрге қосылады
+    const k = state.courses.find((c) => c.id === courseFilter);
+    act(k ? `${name} қосылды (${k.name})` : `${name} қосылды`, () => {
+      const s = { id: newId(), name, cycles: [{ start: today(), dates: [] }] };
+      if (k) s.course = k.id;
+      state.students.push(s);
     });
   } else if (e.target.id === 'addDateForm') {
     const s = find(currentId());
     if (s) onAddDate(s, $('missDate').value);
+  }
+});
+
+document.addEventListener('change', (e) => {
+  if (e.target.id === 'courseSel') {
+    const s = find(currentId());
+    if (!s) return;
+    const k = state.courses.find((x) => x.id === e.target.value);
+    act(k ? `${s.name}: ${k.name}` : `${s.name}: сабақ түрі алынды`, () => { if (k) s.course = k.id; else delete s.course; });
+  } else if (e.target.id === 'defLessons') {
+    const n = clampN(e.target.value.replace(/\D/g, ''));
+    e.target.value = n;
+    if (n === clampN(state.meta.lessons)) return;
+    act(`Түрі жоқ оқушылар: ${n} сабақ`, () => { state.meta.lessons = n; });
   }
 });
 
@@ -596,10 +719,10 @@ async function init() {
     const saved = await dbGet('state');
     if (saved && Array.isArray(saved.students)) {
       state = saved;
+      if (!Array.isArray(state.courses)) state.courses = [];
       state.meta = Object.assign({ created: today(), lastBackup: null }, saved.meta);
     } else {
-      state.students = SEED.map((name) => ({ id: newId(), name, cycles: [{ start: today(), dates: [] }] }));
-      await dbSet('state', state);
+      await dbSet('state', state); // бірінші ашылу: тізім бос
     }
   } catch (e) {
     render();
