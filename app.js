@@ -391,6 +391,46 @@ async function onEditCourse(c) {
   else act(`«${name}» қосылды`, () => { state.courses.push({ id: newId(), name, lessons, price }); });
 }
 
+/* Тізімді мәтінмен қосу. Әр жол: «Түрі: аты, аты» немесе тек «аты, аты» */
+async function onBulk() {
+  const lower = (x) => x.toLocaleLowerCase('kk');
+  const groups = [];
+  for (const line of $('bulkText').value.split(/\r?\n/)) {
+    const i = line.indexOf(':');
+    const cname = i >= 0 ? line.slice(0, i).trim().slice(0, 40) : '';
+    const names = (i >= 0 ? line.slice(i + 1) : line).split(/[,;]/).map((x) => x.trim().slice(0, 60)).filter(Boolean);
+    if (names.length) groups.push({ cname, names });
+  }
+  const all = groups.reduce((a, g) => a.concat(g.names), []);
+  if (!all.length) return toast('Алдымен тізімді жазыңыз');
+  const has = (n) => state.students.some((s) => lower(s.name) === lower(n));
+  const fresh = [...new Set(all.map(lower))].filter((n) => !has(n)).length;
+  const newCourses = [...new Set(groups.map((g) => g.cname).filter(Boolean).map(lower))]
+    .filter((n) => !state.courses.some((c) => lower(c.name) === n)).length;
+  const v = await sheet({
+    title: 'Тізімді қосу',
+    text: `${fresh} жаңа оқушы және ${newCourses} жаңа сабақ түрі қосылады.` +
+      (all.length - fresh > 0 ? ' Бұрыннан бар оқушылар қайталанбайды, тек түрі жаңарады.' : ''),
+    buttons: [{ label: 'Қосу', value: 'yes', kind: 'primary' }, CANCEL]
+  });
+  if (v !== 'yes') return;
+  act(`Тізім қосылды: ${fresh} жаңа оқушы`, () => {
+    for (const g of groups) {
+      let k = null;
+      if (g.cname) {
+        k = state.courses.find((c) => lower(c.name) === lower(g.cname));
+        if (!k) { k = { id: newId(), name: g.cname, lessons: clampN(state.meta.lessons), price: 0 }; state.courses.push(k); }
+      }
+      for (const name of g.names) {
+        let s = state.students.find((x) => lower(x.name) === lower(name));
+        if (!s) { s = { id: newId(), name, cycles: [{ start: today(), dates: [] }] }; state.students.push(s); }
+        if (k) s.course = k.id;
+      }
+    }
+  });
+  $('bulkText').value = '';
+}
+
 function renderSettings() {
   $('courseList').innerHTML = state.courses.length ? state.courses.map((c) => `
     <li><button type="button" class="payrow" data-act="editcourse" data-id="${c.id}">
@@ -655,6 +695,7 @@ document.addEventListener('click', (e) => {
   else if (a === 'came') onCame(el.dataset.id);
   else if (a === 'course') { courseFilter = el.dataset.c; renderList(); }
   else if (a === 'addcourse') onEditCourse(null);
+  else if (a === 'bulk') onBulk();
   else if (a === 'editcourse') { const c = state.courses.find((x) => x.id === el.dataset.id); if (c) onEditCourse(c); }
   else if (a === 'backup') backup();
   else if (a === 'restore') $('restoreFile').click();
