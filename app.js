@@ -637,6 +637,145 @@ async function tgCall(token, method, body) {
   return j.result;
 }
 
+/* ───────── Excel (.xlsx) файлы — кітапханасыз ───────── */
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(u8) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < u8.length; i++) c = CRC_TABLE[(c ^ u8[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+/* Сығусыз ZIP: files = [{name, text}] */
+function zipStore(files, type) {
+  const enc = new TextEncoder();
+  const parts = [];
+  const central = [];
+  let offset = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name);
+    const data = enc.encode(f.text);
+    const crc = crc32(data);
+    const h = new DataView(new ArrayBuffer(30));
+    h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true);
+    h.setUint16(12, 0x21, true); h.setUint32(14, crc, true);
+    h.setUint32(18, data.length, true); h.setUint32(22, data.length, true); h.setUint16(26, name.length, true);
+    parts.push(new Uint8Array(h.buffer), name, data);
+    const c = new DataView(new ArrayBuffer(46));
+    c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true);
+    c.setUint16(14, 0x21, true); c.setUint32(16, crc, true);
+    c.setUint32(20, data.length, true); c.setUint32(24, data.length, true); c.setUint16(28, name.length, true);
+    c.setUint32(42, offset, true);
+    central.push(new Uint8Array(c.buffer), name);
+    offset += 30 + name.length + data.length;
+  }
+  const cdSize = central.reduce((a, p) => a + p.length, 0);
+  const e = new DataView(new ArrayBuffer(22));
+  e.setUint32(0, 0x06054b50, true); e.setUint16(8, files.length, true); e.setUint16(10, files.length, true);
+  e.setUint32(12, cdSize, true); e.setUint32(16, offset, true);
+  return new Blob(parts.concat(central, [new Uint8Array(e.buffer)]), { type });
+}
+const xesc = (s) => String(s).replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
+  .replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function colName(i) {
+  let s = '';
+  for (i++; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + ((i - 1) % 26)) + s;
+  return s;
+}
+function sheetXml(rows, widths, freezeCols) {
+  const body = rows.map((r, ri) => `<row r="${ri + 1}">` + r.map((v, ci) => {
+    if (v === '' || v == null) return '';
+    const ref = `${colName(ci)}${ri + 1}`;
+    return typeof v === 'number' ? `<c r="${ref}"><v>${v}</v></c>`
+      : `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${xesc(v)}</t></is></c>`;
+  }).join('') + '</row>').join('');
+  const pane = freezeCols
+    ? `<pane xSplit="${freezeCols}" ySplit="1" topLeftCell="${colName(freezeCols)}2" activePane="bottomRight" state="frozen"/>`
+    : '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>';
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    `<sheetViews><sheetView workbookViewId="0">${pane}</sheetView></sheetViews>` +
+    '<cols>' + widths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('') + '</cols>' +
+    `<sheetData>${body}</sheetData></worksheet>`;
+}
+
+function excelFile() {
+  const cname = (s) => (course(s) ? course(s).name : '');
+  // 1-парақ: журнал — оқушылар жолда, күндер бағанда
+  const allDates = [...new Set(state.students.flatMap((s) => s.cycles.flatMap((c) => c.dates)))].sort();
+  const journal = [['Аты', 'Сабақ түрі', 'Барлық сабақ', 'Ағымдағы цикл'].concat(allDates.map(fmtFull))];
+  for (const s of state.students) {
+    const mine = new Set(s.cycles.flatMap((c) => c.dates));
+    const st = stat(s);
+    journal.push([s.name, cname(s), mine.size, `${st.done}/${st.total}` + (st.extra ? ` +${st.extra}` : '')]
+      .concat(allDates.map((d) => (mine.has(d) ? '+' : ''))));
+  }
+  journal.push(['Күніне келгені', '', '', ''].concat(
+    allDates.map((d) => state.students.filter((s) => s.cycles.some((c) => c.dates.includes(d))).length)));
+
+  // 2-парақ: әр келген күн бөлек жолда
+  const visits = [['Күні', 'Апта күні', 'Аты', 'Сабақ түрі', 'Цикл №', 'Циклдегі сабақ №']];
+  const pays = [['Төлем күні', 'Аты', 'Сабақ түрі', 'Сомасы, ₸', 'Цикл №', 'Цикл басталған күн', 'Келген сабақ саны']];
+  const vrows = [];
+  const prows = [];
+  for (const s of state.students) {
+    s.cycles.forEach((c, ci) => {
+      c.dates.forEach((d, di) => vrows.push([d, s.name, cname(s), ci + 1, di + 1]));
+      if (c.paid) prows.push([c.paid.date, s.name, cname(s), c.paid.amount || 0, ci + 1, c.start, c.dates.length]);
+    });
+  }
+  vrows.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1], 'kk'));
+  prows.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1], 'kk'));
+  for (const r of vrows) visits.push([fmtFull(r[0]), WD_FULL[parse(r[0]).getDay()], r[1], r[2], r[3], r[4]]);
+  for (const r of prows) pays.push([fmtFull(r[0]), r[1], r[2], r[3], r[4], fmtFull(r[5]), r[6]]);
+  pays.push(['Барлығы', '', '', prows.reduce((a, r) => a + r[3], 0)]);
+
+  const sheets = [
+    { name: 'Журнал', xml: sheetXml(journal, [24, 18, 13, 15].concat(allDates.map(() => 11)), 1) },
+    { name: 'Келген күндер', xml: sheetXml(visits, [12, 12, 24, 18, 9, 17]) },
+    { name: 'Төлемдер', xml: sheetXml(pays, [12, 24, 18, 12, 9, 19, 19]) }
+  ];
+  const head = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+  const ns = 'http://schemas.openxmlformats.org';
+  const files = [
+    { name: '[Content_Types].xml', text: `${head}<Types xmlns="${ns}/package/2006/content-types">` +
+      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+      '<Default Extension="xml" ContentType="application/xml"/>' +
+      '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+      sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('') +
+      '</Types>' },
+    { name: '_rels/.rels', text: `${head}<Relationships xmlns="${ns}/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="${ns}/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>` },
+    { name: 'xl/workbook.xml', text: `${head}<workbook xmlns="${ns}/spreadsheetml/2006/main" xmlns:r="${ns}/officeDocument/2006/relationships">` +
+      '<bookViews><workbookView/></bookViews><sheets>' +
+      sheets.map((s, i) => `<sheet name="${xesc(s.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('') +
+      '</sheets></workbook>' },
+    { name: 'xl/_rels/workbook.xml.rels', text: `${head}<Relationships xmlns="${ns}/package/2006/relationships">` +
+      sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="${ns}/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('') +
+      '</Relationships>' }
+  ].concat(sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, text: s.xml })));
+  const type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  return new File([zipStore(files, type)], `qatysym-${today()}.xlsx`, { type });
+}
+
+async function exportExcel() {
+  if (!state.students.length) return toast('Әзірге оқушы жоқ');
+  const file = excelFile();
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file] });
+    else download(file);
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;
+    download(file);
+  }
+}
+
 /* Адамға түсінікті күндік есеп (Telegram-ға файлмен бірге жіберіледі) */
 function reportText() {
   const t = today();
@@ -687,35 +826,37 @@ async function tgSend(manual = false) {
   tgBusy = true;
   const sent = state.meta.unsaved || 0;
   try {
-    const fd = new FormData();
-    fd.append('chat_id', tg.chatId);
-    fd.append('document', backupFile());
-    fd.append('caption', `Сақтық көшірме, ${fmtFull(today())}. Бұл файл қосымшаға арналған — оқудың қажеті жоқ, тек сақтап қойыңыз.`);
-    fd.append('disable_notification', 'true');
-    const msg = await tgCall(tg.token, 'sendDocument', fd);
-    // Бір күнде бір ғана файл қалсын: сол күнгі алдыңғысын өшіреміз
-    if (tg.lastMsg && tg.lastDay === today()) {
-      const del = new FormData();
-      del.append('chat_id', tg.chatId);
-      del.append('message_id', tg.lastMsg);
-      tgCall(tg.token, 'deleteMessage', del).catch(() => {});
-    }
-    // Түсінікті есеп: файлдан бөлек хабарлама. Сәтсіз болса да, көшірме жіберілді деп саналады.
+    const post = async (method, fields) => {
+      const fd = new FormData();
+      fd.append('chat_id', tg.chatId);
+      for (const k of Object.keys(fields)) fd.append(k, fields[k]);
+      return (await tgCall(tg.token, method, fd)).message_id;
+    };
+    const ids = [];
+    // 1) Қосымшаға арналған көшірме — міндетті
+    ids.push(await post('sendDocument', {
+      document: backupFile(), disable_notification: 'true',
+      caption: `Сақтық көшірме, ${fmtFull(today())}. Бұл файл қосымшаға арналған — оқудың қажеті жоқ, тек сақтап қойыңыз.`
+    }));
+    // 2) Excel кестесі мен 3) түсінікті есеп — сәтсіз болса да, көшірме жіберілді деп саналады
     try {
-      const rep = new FormData();
-      rep.append('chat_id', tg.chatId);
-      rep.append('text', reportText());
-      rep.append('disable_notification', 'true');
-      const rm = await tgCall(tg.token, 'sendMessage', rep);
-      if (tg.lastRep && tg.lastDay === today()) {
-        const del = new FormData();
-        del.append('chat_id', tg.chatId);
-        del.append('message_id', tg.lastRep);
-        tgCall(tg.token, 'deleteMessage', del).catch(() => {});
+      ids.push(await post('sendDocument', {
+        document: excelFile(), disable_notification: 'true',
+        caption: 'Excel кестесі: кім қай күні келді және төлемдер.'
+      }));
+    } catch (e) { /* міндетті емес */ }
+    try {
+      ids.push(await post('sendMessage', { text: reportText(), disable_notification: 'true' }));
+    } catch (e) { /* міндетті емес */ }
+    // Бір күнде бір ғана жинақ қалсын: сол күнгі алдыңғыларын өшіреміз
+    if (tg.lastDay === today()) {
+      for (const id of [tg.lastMsg, tg.lastRep].concat(tg.lastIds || []).filter(Boolean)) {
+        post('deleteMessage', { message_id: id }).catch(() => {});
       }
-      tg.lastRep = rm.message_id;
-    } catch (e) { /* есеп міндетті емес */ }
-    tg.lastMsg = msg.message_id;
+    }
+    delete tg.lastMsg;
+    delete tg.lastRep;
+    tg.lastIds = ids;
     tg.lastDay = today();
     tg.lastAt = Date.now();
     tg.error = '';
@@ -906,6 +1047,7 @@ document.addEventListener('click', (e) => {
   else if (a === 'course') { courseFilter = el.dataset.c; renderList(); }
   else if (a === 'addcourse') onEditCourse(null);
   else if (a === 'bulk') onBulk();
+  else if (a === 'excel') exportExcel();
   else if (a === 'tgconnect') tgConnect();
   else if (a === 'tgchat') tgFindChat();
   else if (a === 'tgsend') tgSend(true);
