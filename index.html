@@ -39,6 +39,7 @@
         <button type="button" class="btn small" data-act="backup">Көшірмені сақтау</button>
       </div>
       <div id="chips" class="chips" role="tablist"></div>
+      <div id="courses" class="pills" hidden></div>
       <input id="search" class="field" type="search" placeholder="Іздеу" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="search" aria-label="Іздеу">
     </div>
 
@@ -72,6 +73,17 @@
     </header>
 
     <div class="card">
+      <h3>Сабақ түрлері</h3>
+      <p class="muted">Әр түрдің өз сабақ саны мен бағасы болады. Оқушыны түрге оның бетінен қосасыз.</p>
+      <ul id="courseList" class="paylist"></ul>
+      <button type="button" class="btn block" data-act="addcourse">+ Сабақ түрін қосу</button>
+      <label class="inline" for="defLessons">
+        <span>Түрі жоқ оқушыларға бір төлемге неше сабақ</span>
+        <input id="defLessons" class="field" type="text" inputmode="numeric" maxlength="2">
+      </label>
+    </div>
+
+    <div class="card">
       <h3>Сақтық көшірме</h3>
       <p class="muted">Деректер тек осы телефонда сақталады. Көшірмені аптасына бір рет Файлдар қолданбасына немесе Telegram-ға жіберіп отырыңыз.</p>
       <p id="backupInfo" class="info"></p>
@@ -94,6 +106,7 @@
     <h3 id="sheetTitle"></h3>
     <p id="sheetText" class="muted"></p>
     <input id="sheetInput" class="field" type="text" maxlength="60" hidden>
+    <div id="sheetFields" class="sheet-fields" hidden></div>
     <div id="sheetBtns" class="sheet-btns"></div>
   </div>
 </div>
