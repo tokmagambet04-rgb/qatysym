@@ -637,6 +637,48 @@ async function tgCall(token, method, body) {
   return j.result;
 }
 
+/* Адамға түсінікті күндік есеп (Telegram-ға файлмен бірге жіберіледі) */
+function reportText() {
+  const t = today();
+  const d = new Date();
+  const rows = state.students.map((s) => ({ s, st: stat(s) }));
+  const tag = (s) => (course(s) ? ` (${course(s).name})` : '');
+  const lines = [`Қатысым — ${fmtFull(t)}, ${WD_FULL[d.getDay()]}`, ''];
+
+  const came = rows.filter((r) => r.st.today);
+  lines.push(`Бүгін келгендер: ${came.length}`);
+  for (const r of came) {
+    lines.push(`• ${r.s.name}${tag(r.s)} — ${r.st.done}/${r.st.total}` + (r.st.extra ? `, +${r.st.extra} артық` : ''));
+  }
+  lines.push('');
+
+  const due = rows.filter((r) => r.st.left === 0);
+  lines.push(`Төлеу керек: ${due.length}`);
+  for (const r of due) lines.push(`• ${r.s.name}${tag(r.s)}` + (r.st.extra ? ` — +${r.st.extra} артық сабақ` : ''));
+  lines.push('');
+
+  const soon = rows.filter((r) => r.st.left === 1 || r.st.left === 2);
+  lines.push(`1–2 сабақ қалды: ${soon.length}`);
+  for (const r of soon) lines.push(`• ${r.s.name}${tag(r.s)} — ${r.st.left} сабақ қалды`);
+  lines.push('');
+
+  const month = t.slice(0, 7);
+  let daySum = 0, monthSum = 0, monthN = 0;
+  const dayPays = [];
+  for (const s of state.students) {
+    for (const c of s.cycles) {
+      if (!c.paid) continue;
+      if (c.paid.date === t) { daySum += c.paid.amount || 0; dayPays.push(`• ${s.name} — ${paidText(c.paid)}`); }
+      if (c.paid.date.slice(0, 7) === month) { monthSum += c.paid.amount || 0; monthN++; }
+    }
+  }
+  lines.push(`Бүгін түскен төлем: ${money(daySum)}`);
+  lines.push(...dayPays);
+  lines.push(`${MONTHS[d.getMonth()]} айында түскені: ${money(monthSum)} (${monthN} төлем)`);
+  lines.push('', `Барлық оқушы: ${rows.length}`);
+  return lines.join('\n').slice(0, 4000);
+}
+
 async function tgSend(manual = false) {
   const tg = state.meta.tg;
   if (!tgReady() || tgBusy) return false;
@@ -648,7 +690,7 @@ async function tgSend(manual = false) {
     const fd = new FormData();
     fd.append('chat_id', tg.chatId);
     fd.append('document', backupFile());
-    fd.append('caption', `Қатысым — сақтық көшірме, ${fmtFull(today())}. Оқушы саны: ${state.students.length}`);
+    fd.append('caption', `Сақтық көшірме, ${fmtFull(today())}. Бұл файл қосымшаға арналған — оқудың қажеті жоқ, тек сақтап қойыңыз.`);
     fd.append('disable_notification', 'true');
     const msg = await tgCall(tg.token, 'sendDocument', fd);
     // Бір күнде бір ғана файл қалсын: сол күнгі алдыңғысын өшіреміз
@@ -658,6 +700,21 @@ async function tgSend(manual = false) {
       del.append('message_id', tg.lastMsg);
       tgCall(tg.token, 'deleteMessage', del).catch(() => {});
     }
+    // Түсінікті есеп: файлдан бөлек хабарлама. Сәтсіз болса да, көшірме жіберілді деп саналады.
+    try {
+      const rep = new FormData();
+      rep.append('chat_id', tg.chatId);
+      rep.append('text', reportText());
+      rep.append('disable_notification', 'true');
+      const rm = await tgCall(tg.token, 'sendMessage', rep);
+      if (tg.lastRep && tg.lastDay === today()) {
+        const del = new FormData();
+        del.append('chat_id', tg.chatId);
+        del.append('message_id', tg.lastRep);
+        tgCall(tg.token, 'deleteMessage', del).catch(() => {});
+      }
+      tg.lastRep = rm.message_id;
+    } catch (e) { /* есеп міндетті емес */ }
     tg.lastMsg = msg.message_id;
     tg.lastDay = today();
     tg.lastAt = Date.now();
