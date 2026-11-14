@@ -88,9 +88,11 @@ function act(msg, fn) {
   state.meta.unsaved = (state.meta.unsaved || 0) + 1; // көшірмеге әлі түспеген өзгерістер
   save();
   render();
+  tgSchedule();
   toast(msg, () => {
     const old = JSON.parse(snap);
-    state.meta.unsaved = Math.max(0, (state.meta.unsaved || 0) - 1);
+    state.meta.unsaved = (state.meta.unsaved || 0) + 1;
+    tgSchedule();
     state.students = old.s;
     state.courses = old.c;
     state.meta.lessons = old.l;
@@ -445,6 +447,7 @@ function renderSettings() {
     </button></li>`).join('')
     : '<li class="muted">Әзірге сабақ түрі жоқ. Мысалы: ҰБТ, НИШ, жеке сабақ.</li>';
   if (document.activeElement !== $('defLessons')) $('defLessons').value = clampN(state.meta.lessons);
+  renderTg();
   const lb = state.meta.lastBackup;
   $('backupInfo').textContent = (lb
     ? `Соңғы көшірме: ${fmtFull(lb)} (${daysBetween(lb, today())} күн бұрын).`
@@ -612,12 +615,155 @@ function download(file) {
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 }
 
-async function backup() {
+function backupFile() {
   const data = JSON.stringify({
     app: 'qatysym', version: 2, exported: new Date().toISOString(),
     lessons: clampN(state.meta.lessons), courses: state.courses, students: state.students
   }, null, 2);
-  const file = new File([data], `qatysym-${today()}.json`, { type: 'application/json' });
+  return new File([data], `qatysym-${today()}.json`, { type: 'application/json' });
+}
+
+/* ───────── Telegram боты: көшірмені өздігінен жіберу ─────────
+   Кілт (token) тек осы құрылғыда сақталады, көшірме файлына кірмейді. */
+const TG_DELAY = 30000; // соңғы өзгерістен кейін 30 секунд күтеді
+let tgTimer = null;
+let tgBusy = false;
+const tgReady = () => !!(state.meta.tg && state.meta.tg.chatId);
+
+async function tgCall(token, method, body) {
+  const r = await fetch(`https://api.telegram.org/bot${token}/${method}`, body ? { method: 'POST', body } : undefined);
+  const j = await r.json().catch(() => null);
+  if (!j || !j.ok) throw new Error((j && j.description) || `HTTP ${r.status}`);
+  return j.result;
+}
+
+async function tgSend(manual = false) {
+  const tg = state.meta.tg;
+  if (!tgReady() || tgBusy) return false;
+  clearTimeout(tgTimer);
+  tgTimer = null;
+  tgBusy = true;
+  const sent = state.meta.unsaved || 0;
+  try {
+    const fd = new FormData();
+    fd.append('chat_id', tg.chatId);
+    fd.append('document', backupFile());
+    fd.append('caption', `Қатысым — сақтық көшірме, ${fmtFull(today())}. Оқушы саны: ${state.students.length}`);
+    fd.append('disable_notification', 'true');
+    const msg = await tgCall(tg.token, 'sendDocument', fd);
+    // Бір күнде бір ғана файл қалсын: сол күнгі алдыңғысын өшіреміз
+    if (tg.lastMsg && tg.lastDay === today()) {
+      const del = new FormData();
+      del.append('chat_id', tg.chatId);
+      del.append('message_id', tg.lastMsg);
+      tgCall(tg.token, 'deleteMessage', del).catch(() => {});
+    }
+    tg.lastMsg = msg.message_id;
+    tg.lastDay = today();
+    tg.lastAt = Date.now();
+    tg.error = '';
+    state.meta.lastBackup = today();
+    state.meta.unsaved = Math.max(0, (state.meta.unsaved || 0) - sent);
+    save();
+    if (manual) toast('Көшірме Telegram-ға жіберілді');
+    if (shown !== 'student') render();
+    return true;
+  } catch (e) {
+    tg.error = navigator.onLine === false ? 'интернет жоқ' : String((e && e.message) || e);
+    save();
+    if (manual) toast(`Telegram-ға жіберілмеді: ${tg.error}`);
+    if (shown === 'settings') renderSettings();
+    return false;
+  } finally {
+    tgBusy = false;
+  }
+}
+function tgSchedule() {
+  if (!tgReady()) return;
+  clearTimeout(tgTimer);
+  tgTimer = setTimeout(() => tgSend(), TG_DELAY);
+}
+
+async function tgConnect() {
+  const token = $('tgToken').value.trim();
+  if (!/^\d+:[\w-]{30,}$/.test(token)) return toast('Кілт дұрыс емес сияқты. BotFather берген кілтті толық көшіріңіз.');
+  try {
+    const me = await tgCall(token, 'getMe');
+    state.meta.tg = { token, bot: me.username };
+    save();
+    renderSettings();
+    toast(`Бот табылды: @${me.username}`);
+  } catch (e) {
+    toast(`Бот табылмады: ${navigator.onLine === false ? 'интернет жоқ' : e.message}`);
+  }
+}
+async function tgFindChat() {
+  const tg = state.meta.tg;
+  if (!tg) return;
+  try {
+    const ups = await tgCall(tg.token, 'getUpdates');
+    const m = ups.map((u) => u.message).filter((x) => x && x.chat && x.chat.type === 'private').pop();
+    if (!m) return toast('Хабарлама табылмады. Ботты ашып, «Start» басыңыз да, қайта көріңіз.');
+    tg.chatId = m.chat.id;
+    tg.name = m.chat.first_name || '';
+    save();
+    renderSettings();
+    await tgSend(true);
+  } catch (e) {
+    toast(`Қате: ${navigator.onLine === false ? 'интернет жоқ' : e.message}`);
+  }
+}
+async function tgOff() {
+  if (tgReady()) {
+    const v = await sheet({
+      title: 'Ботты ажырату керек пе?',
+      text: 'Көшірме Telegram-ға өздігінен жіберілмейтін болады. Бұрын жіберілген файлдар Telegram-да қалады.',
+      buttons: [{ label: 'Иә, ажырат', value: 'yes', kind: 'danger-fill' }, CANCEL]
+    });
+    if (v !== 'yes') return;
+  }
+  clearTimeout(tgTimer);
+  delete state.meta.tg;
+  save();
+  renderSettings();
+}
+function renderTg() {
+  if (document.activeElement && document.activeElement.id === 'tgToken') return;
+  const tg = state.meta.tg;
+  if (!tg) {
+    $('tgBody').innerHTML = `
+      <ol class="steps">
+        <li>Telegram-да <b>@BotFather</b> ботын ашып, <b>/newbot</b> деп жазыңыз.</li>
+        <li>Ботқа ат және <b>bot</b> деп аяқталатын пайдаланушы атын беріңіз.</li>
+        <li>BotFather жіберген ұзын кілтті көшіріп, төменге қойыңыз.</li>
+      </ol>
+      <input id="tgToken" class="field" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+        placeholder="123456789:AAH..." aria-label="Бот кілті">
+      <button type="button" class="btn block" data-act="tgconnect">Ботты тексеру</button>
+      <p class="muted" style="margin-top:10px">Кілт тек осы телефонда сақталады. Оны ешкімге бермеңіз.</p>`;
+  } else if (!tg.chatId) {
+    $('tgBody').innerHTML = `
+      <p class="info">Бот табылды: @${esc(tg.bot)}</p>
+      <ol class="steps">
+        <li><a href="https://t.me/${esc(tg.bot)}" target="_blank" rel="noopener">Ботты Telegram-да ашып</a>, <b>Start</b> басыңыз.</li>
+        <li>Осы бетке қайтып, төмендегі батырманы басыңыз.</li>
+      </ol>
+      <button type="button" class="btn primary block" data-act="tgchat">Чатты табу және сынап жіберу</button>
+      <button type="button" class="btn block" data-act="tgoff">Бас тарту</button>`;
+  } else {
+    const d = tg.lastAt ? new Date(tg.lastAt) : null;
+    const when = d ? `${pad(d.getDate())}.${pad(d.getMonth() + 1)} ${pad(d.getHours())}:${pad(d.getMinutes())}` : 'әлі жоқ';
+    $('tgBody').innerHTML = `
+      <p class="info">Қосулы: @${esc(tg.bot)}${tg.name ? ` → ${esc(tg.name)}` : ''}</p>
+      <p class="muted">Өзгеріс болған соң жарты минутта көшірме ботқа өзі жіберіледі. Соңғы жіберілгені: ${when}.</p>
+      ${tg.error ? `<p class="unpaid">Соңғы әрекет сәтсіз: ${esc(tg.error)}. Интернет қосылғанда қайталанады.</p>` : ''}
+      <button type="button" class="btn block" data-act="tgsend">Қазір жіберу</button>
+      <button type="button" class="btn danger block" data-act="tgoff">Ботты ажырату</button>`;
+  }
+}
+
+async function backup() {
+  const file = backupFile();
   try {
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       await navigator.share({ files: [file] });
@@ -703,6 +849,10 @@ document.addEventListener('click', (e) => {
   else if (a === 'course') { courseFilter = el.dataset.c; renderList(); }
   else if (a === 'addcourse') onEditCourse(null);
   else if (a === 'bulk') onBulk();
+  else if (a === 'tgconnect') tgConnect();
+  else if (a === 'tgchat') tgFindChat();
+  else if (a === 'tgsend') tgSend(true);
+  else if (a === 'tgoff') tgOff();
   else if (a === 'editcourse') { const c = state.courses.find((x) => x.id === el.dataset.id); if (c) onEditCourse(c); }
   else if (a === 'backup') backup();
   else if (a === 'restore') $('restoreFile').click();
@@ -759,7 +909,12 @@ $('restoreFile').addEventListener('change', (e) => {
 });
 window.addEventListener('hashchange', () => { closeSheet(null); render(); });
 // Түн ортасынан кейін ашылса, «бүгін» жаңарсын
-document.addEventListener('visibilitychange', () => { if (!document.hidden) render(); });
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) render();
+  // Қосымша жабылып бара жатса, күтіп тұрған көшірмені бірден жіберуге тырысамыз
+  if (tgReady() && (state.meta.unsaved || 0) > 0) tgSend();
+});
+window.addEventListener('online', () => { if (tgReady() && (state.meta.unsaved || 0) > 0) tgSend(); });
 
 /* ───────── Іске қосу ───────── */
 async function init() {
@@ -778,6 +933,7 @@ async function init() {
     return;
   }
   render();
+  if (tgReady() && (state.meta.unsaved || 0) > 0) tgSend(); // өткен жолы жіберілмей қалғаны
 
   if (navigator.storage && navigator.storage.persist) {
     try {
