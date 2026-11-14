@@ -85,10 +85,12 @@ function save() {
 function act(msg, fn) {
   const snap = JSON.stringify({ s: state.students, c: state.courses, l: state.meta.lessons });
   fn();
+  state.meta.unsaved = (state.meta.unsaved || 0) + 1; // көшірмеге әлі түспеген өзгерістер
   save();
   render();
   toast(msg, () => {
     const old = JSON.parse(snap);
+    state.meta.unsaved = Math.max(0, (state.meta.unsaved || 0) - 1);
     state.students = old.s;
     state.courses = old.c;
     state.meta.lessons = old.l;
@@ -235,12 +237,15 @@ function renderList() {
 
   // Сақтық көшірме туралы ескерту
   const since = daysBetween(state.meta.lastBackup || state.meta.created, today());
-  const show = since >= BACKUP_DAYS && state.students.length > 0;
+  const unsaved = state.meta.unsaved || 0;
+  const overdue = since >= BACKUP_DAYS && state.students.length > 0;
+  const show = overdue || unsaved > 0;
   $('banner').hidden = !show;
+  $('banner').classList.toggle('soft', !overdue);
   if (show) {
-    $('bannerText').textContent = state.meta.lastBackup
-      ? `Соңғы көшірмеден бері ${since} күн өтті`
-      : `Сақтық көшірме әлі жасалмаған (${since} күн)`;
+    $('bannerText').textContent = !overdue ? `Көшірмеге түспеген өзгеріс: ${unsaved}`
+      : state.meta.lastBackup ? `Соңғы көшірмеден бері ${since} күн өтті`
+        : `Сақтық көшірме әлі жасалмаған (${since} күн)`;
   }
 
   // Сабақ түрі бойынша сүзгі
@@ -441,9 +446,10 @@ function renderSettings() {
     : '<li class="muted">Әзірге сабақ түрі жоқ. Мысалы: ҰБТ, НИШ, жеке сабақ.</li>';
   if (document.activeElement !== $('defLessons')) $('defLessons').value = clampN(state.meta.lessons);
   const lb = state.meta.lastBackup;
-  $('backupInfo').textContent = lb
-    ? `Соңғы көшірме: ${fmtFull(lb)} (${daysBetween(lb, today())} күн бұрын)`
-    : 'Көшірме әлі жасалмаған';
+  $('backupInfo').textContent = (lb
+    ? `Соңғы көшірме: ${fmtFull(lb)} (${daysBetween(lb, today())} күн бұрын).`
+    : 'Көшірме әлі жасалмаған.') +
+    (state.meta.unsaved ? ` Содан бергі өзгеріс: ${state.meta.unsaved}.` : lb ? ' Барлық өзгеріс көшірмеде.' : '');
   $('persistInfo').textContent =
     `Оқушылар саны: ${state.students.length}. ` +
     (persisted === true ? 'Тұрақты сақтау қосулы — телефон деректерді өздігінен тазаламайды.'
@@ -623,6 +629,7 @@ async function backup() {
     download(file);
   }
   state.meta.lastBackup = today();
+  state.meta.unsaved = 0;
   save();
   render();
   toast('Көшірме дайын. Оны сенімді жерде сақтаңыз.');
