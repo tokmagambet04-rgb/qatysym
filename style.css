@@ -109,6 +109,9 @@ select.field { padding-right: 10px; }
 .overlay.top { align-items: flex-start; padding-top: calc(env(safe-area-inset-top) + 12px); }
 .field.area { display: block; min-height: 132px; margin-top: 10px; padding: 12px 14px; line-height: 1.4; resize: vertical; }
 .banner.soft { border-color: var(--line); background: var(--card); color: var(--text); }
+.steps { margin: 0 0 12px; padding-left: 22px; font-size: 15px; }
+.steps li { margin-top: 6px; }
+.steps a { color: var(--accent); font-weight: 600; }
 .topbtns { display: flex; gap: 6px; }
 .topbtns .btn { padding: 0 10px; font-size: 15px; }
 .unpaid { color: var(--danger); font-weight: 600; }
